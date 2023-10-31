@@ -3,10 +3,8 @@ package bongo
 import (
 	"fmt"
 	"github.com/bontusss/bongo/session"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +21,10 @@ import (
 
 const (
 	VERSION = "1.0.0"
+	PORT    = "4000"
 )
+
+var goh = "\n  ____                          \n |  _ \\                         \n | |_) | ___  _ __   __ _  ___  \n |  _ < / _ \\| '_ \\ / _` |/ _ \\ \n | |_) | (_) | | | | (_| | (_) |\n |____/ \\___/|_| |_|\\__, |\\___/ \n                     __/ |      \n                    |___/       \n"
 
 var ProjectFolders = []string{"models", "templates", "handlers", "settings", "migrations", "tmp", "public", "logs"}
 
@@ -31,7 +32,7 @@ type Bongo struct {
 	AppName  string
 	Version  string
 	Debug    bool
-	Logger   *zap.Logger
+	Logger   *slog.Logger
 	config   config
 	RootPath string
 	Router   *chi.Mux
@@ -75,9 +76,9 @@ func (b *Bongo) New(rootPath string) error {
 
 	// config
 	b.config = config{
-		logger:         os.Getenv("LOGGER"),
 		port:           os.Getenv("PORT"),
 		templateEngine: strings.ToLower(os.Getenv("TEMPLATE")),
+
 		cookie: cookieConfig{
 			name:     os.Getenv("COOKIE_NAME"),
 			lifetime: os.Getenv("COOKIE_LIFETIME"),
@@ -99,18 +100,8 @@ func (b *Bongo) New(rootPath string) error {
 	}
 	b.Session = sess.InitSession()
 
-	// initialize logger
-	logger := b.createLogger()
-	//if b.Debug == true {
-	//	logger = zap.Must(zap.NewDevelopment())
-	//}
-	defer func(logger *zap.Logger) {
-		err := logger.Sync()
-		if err != nil {
-			log.Println("Logger", err)
-		}
-	}(logger)
-	b.Logger = logger
+	// initialize logger.
+	b.Logger = b.bLogger()
 
 	b.Debug, _ = strconv.ParseBool(os.Getenv("DEBUG"))
 	b.Version = VERSION
@@ -150,18 +141,24 @@ func (b *Bongo) initBongo(rootPath string, folders []string) error {
 
 func (b *Bongo) Serve() {
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", os.Getenv("PORT")),
+		Addr:         fmt.Sprintf(":%s", b.config.port),
 		ErrorLog:     log.Default(),
 		Handler:      b.Router,
 		IdleTimeout:  30 * time.Second,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 600 * time.Second,
 	}
-
-	fmt.Println("Server is running on port", b.config.port)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatal("Error starting server")
+	if b.config.port == "" {
+		fmt.Printf("PORT is not configured, defaulting to %s\n", PORT)
+		b.config.port = PORT
 	}
+	fmt.Println(goh)
+	fmt.Printf("%s is running on port %s\n", b.AppName, b.config.port)
+	err := srv.ListenAndServe()
+	if err != nil {
+		log.Fatalf("Ouch... %v", err)
+	}
+
 }
 
 // Check if settings file exists in the settings folder on the root directory
@@ -187,34 +184,18 @@ func (b *Bongo) initTemplateEngine() *template.Template {
 	}
 }
 
-//	configure loggers
-//
-// betterstack.com/community/guides/logging/go/zap
-// Ask chatgpt to create a custom zap logger
-func (b *Bongo) createLogger() *zap.Logger {
-	stdout := zapcore.AddSync(os.Stdout)
+// configure logger
+func (b *Bongo) bLogger() *slog.Logger {
+	//var logger *slog.Logger
 
-	file := zapcore.AddSync(&lumberjack.Logger{
-		Filename:   "logs/app.log",
-		MaxSize:    10, //megabytes
-		MaxAge:     7,
-		MaxBackups: 3,
-		LocalTime:  false,
-		Compress:   false,
-	})
+	//for development
+	// Set Debug as default log level
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	var handler slog.Handler = slog.NewTextHandler(os.Stdout, opts)
 
-	level := zap.NewAtomicLevelAt(zap.InfoLevel)
-	productionCfg := zap.NewProductionEncoderConfig()
-	productionCfg.TimeKey = "timestamp"
-	productionCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-
-	developmentCfg := zap.NewDevelopmentEncoderConfig()
-	developmentCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
-
-	consoleEncoder := zapcore.NewConsoleEncoder(developmentCfg)
-	fileEncoder := zapcore.NewJSONEncoder(productionCfg)
-
-	core := zapcore.NewTee(zapcore.NewCore(consoleEncoder, stdout, level), zapcore.NewCore(fileEncoder, file, level))
-
-	return zap.New(core)
+	if b.Debug == false {
+		handler = slog.NewJSONHandler(os.Stdout, nil)
+	}
+	logger := slog.New(handler)
+	return logger
 }
